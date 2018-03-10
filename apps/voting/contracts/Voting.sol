@@ -6,11 +6,13 @@ import "@aragon/os/contracts/common/IForwarder.sol";
 
 import "@aragon/os/contracts/lib/minime/MiniMeToken.sol";
 import "@aragon/os/contracts/lib/zeppelin/math/SafeMath.sol";
+import "@aragon/os/contracts/lib/zeppelin/math/SafeMath64.sol";
 import "@aragon/os/contracts/lib/misc/Migrations.sol";
 
 
 contract Voting is IForwarder, AragonApp {
     using SafeMath for uint256;
+    using SafeMath64 for uint64;
 
     MiniMeToken public token;
     uint256 public supportRequiredPct;
@@ -61,7 +63,7 @@ contract Voting is IForwarder, AragonApp {
     {
         initialized();
 
-        require(_supportRequiredPct > 1);
+        require(_minAcceptQuorumPct > 0);
         require(_supportRequiredPct <= PCT_BASE);
         require(_supportRequiredPct >= _minAcceptQuorumPct);
 
@@ -78,6 +80,7 @@ contract Voting is IForwarder, AragonApp {
     * @param _minAcceptQuorumPct New acceptance quorum
     */
     function changeMinAcceptQuorumPct(uint256 _minAcceptQuorumPct) authP(MODIFY_QUORUM_ROLE, arr(_minAcceptQuorumPct, minAcceptQuorumPct)) external {
+        require(_minAcceptQuorumPct > 0);
         require(supportRequiredPct >= _minAcceptQuorumPct);
         minAcceptQuorumPct = _minAcceptQuorumPct;
 
@@ -151,13 +154,19 @@ contract Voting is IForwarder, AragonApp {
         if (_isValuePct(vote.yea, vote.totalVoters, supportRequiredPct))
             return true;
 
-        uint256 totalVotes = vote.yea + vote.nay;
+        uint256 totalVotes = vote.yea.add(vote.nay);
 
-        bool voteEnded = !_isVoteOpen(vote);
-        bool hasSupport = _isValuePct(vote.yea, totalVotes, supportRequiredPct);
-        bool hasMinQuorum = _isValuePct(vote.yea, vote.totalVoters, vote.minAcceptQuorumPct);
+        // vote ended?
+        if (_isVoteOpen(vote))
+            return false;
+        // has Support?
+        if (!_isValuePct(vote.yea, totalVotes, supportRequiredPct))
+            return false;
+        // has Min Quorum?
+        if (!_isValuePct(vote.yea, vote.totalVoters, vote.minAcceptQuorumPct))
+            return false;
 
-        return voteEnded && hasSupport && hasMinQuorum;
+        return true;
     }
 
     function getVote(uint256 _voteId) public view returns (bool open, bool executed, address creator, uint64 startDate, uint256 snapshotBlock, uint256 minAcceptQuorum, uint256 yea, uint256 nay, uint256 totalVoters, bytes script) {
@@ -175,8 +184,12 @@ contract Voting is IForwarder, AragonApp {
         script = vote.executionScript;
     }
 
-    function getVoteMetadata(uint256 _voteId) public view returns (string metadata) {
+    function getVoteMetadata(uint256 _voteId) public view returns (string) {
         return votes[_voteId].metadata;
+    }
+
+    function getVoterState(uint256 _voteId, address _voter) public view returns (VoterState) {
+        return votes[_voteId].voters[_voter];
     }
 
     function _newVote(bytes _executionScript, string _metadata) internal returns (uint256 voteId) {
@@ -250,18 +263,18 @@ contract Voting is IForwarder, AragonApp {
         ExecuteVote(_voteId);
     }
 
-    function _isVoteOpen(Vote storage vote) internal returns (bool) {
-        return uint64(now) < (vote.startDate + voteTime) && !vote.executed;
+    function _isVoteOpen(Vote storage vote) internal view returns (bool) {
+        return uint64(now) < (vote.startDate.add(voteTime)) && !vote.executed;
     }
 
     /**
     * @dev Calculates whether `_value` is at least a percent `_pct` over `_total`
     */
-    function _isValuePct(uint256 _value, uint256 _total, uint256 _pct) internal returns (bool) {
+    function _isValuePct(uint256 _value, uint256 _total, uint256 _pct) internal pure returns (bool) {
         if (_value == 0 && _total > 0)
             return false;
 
-        uint256 m = _total * _pct;
+        uint256 m = _total.mul(_pct);
         uint256 v = m / PCT_BASE;
 
         // If division is exact, allow same value, otherwise require value to be greater

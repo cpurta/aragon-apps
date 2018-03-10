@@ -19,6 +19,12 @@ const createdVoteId = receipt => receipt.logs.filter(x => x.event == 'StartVote'
 
 const ANY_ADDR = '0xffffffffffffffffffffffffffffffffffffffff'
 
+const VOTER_STATE = ['ABSENT', 'YEA', 'NAY'].reduce((state, key, index) => {
+    state[key] = index;
+    return state;
+}, {})
+
+
 contract('Voting App', accounts => {
     let daoFact, app, token, executionTarget = {}
 
@@ -137,6 +143,7 @@ contract('Voting App', accounts => {
                 assert.equal(totalVoters, 100, 'total voters should be 100')
                 assert.equal(execScript, script, 'script should be correct')
                 assert.equal(await app.getVoteMetadata(voteId), 'metadata', 'should have returned correct metadata')
+                assert.equal(await app.getVoterState(voteId, nonHolder), VOTER_STATE.ABSENT, 'nonHolder should not have voted')
             })
 
             it('changing min quorum doesnt affect vote min quorum', async () => {
@@ -158,8 +165,10 @@ contract('Voting App', accounts => {
             it('holder can vote', async () => {
                 await app.vote(voteId, false, true, { from: holder31 })
                 const state = await app.getVote(voteId)
+                const voterState = await app.getVoterState(voteId, holder31)
 
                 assert.equal(state[7], 31, 'nay vote should have been counted')
+                assert.equal(voterState, VOTER_STATE.NAY, 'holder31 should have nay voter status')
             })
 
             it('holder can modify vote', async () => {
@@ -211,6 +220,15 @@ contract('Voting App', accounts => {
                 })
             })
 
+            it('cannot execute vote if not support met', async () => {
+                await app.vote(voteId, false, true, { from: holder31 })
+                await app.vote(voteId, false, true, { from: holder19 })
+                await timeTravel(votingTime + 1)
+                return assertRevert(async () => {
+                    await app.executeVote(voteId)
+                })
+            })
+
             it('vote can be executed automatically if decided', async () => {
                 await app.vote(voteId, true, true, { from: holder50 }) // causes execution
                 assert.equal(await executionTarget.counter(), 2, 'should have executed result')
@@ -238,6 +256,36 @@ contract('Voting App', accounts => {
         })
     })
 
+    context('wrong initializations', () => {
+        beforeEach(async() => {
+            const n = '0x00'
+            token = await MiniMeToken.new(n, n, 0, 'n', 0, 'n', true) // empty parameters minime
+        })
+
+        it('fails if min acceptance quorum is 0', () => {
+            const neededSupport = pct16(20)
+            const minimumAcceptanceQuorum = pct16(0)
+            return assertRevert(async() => {
+                await app.initialize(token.address, neededSupport, minimumAcceptanceQuorum, votingTime)
+            })
+        })
+
+        it('fails if min acceptance quorum is greater than min support', () => {
+            const neededSupport = pct16(20)
+            const minimumAcceptanceQuorum = pct16(50)
+            return assertRevert(async() => {
+                await app.initialize(token.address, neededSupport, minimumAcceptanceQuorum, votingTime)
+            })
+        })
+
+        it('fails if min support is greater than 100', () => {
+            const neededSupport = pct16(101)
+            const minimumAcceptanceQuorum = pct16(20)
+            return assertRevert(async() => {
+                await app.initialize(token.address, neededSupport, minimumAcceptanceQuorum, votingTime)
+            })
+        })
+    })
     context('token supply = 1', () => {
         const holder = accounts[1]
 
